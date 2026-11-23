@@ -8,11 +8,12 @@ import logging
 
 from flask import Flask, jsonify, request
 
+from config import get_api_key
 from llm import call_llm
 
 app = Flask(__name__)
 
-API_KEY = "sk-demo-4f9a2c71-FAKE-KEY-for-training-only"
+API_KEY = get_api_key()
 
 logging.basicConfig(filename="logs/app.log", level=logging.INFO)
 

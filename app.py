@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request
 
 from config import get_api_key
 from llm import call_llm
+from tools import ALLOWED_TOOLS
 
 app = Flask(__name__)
 
@@ -17,74 +18,57 @@ API_KEY = get_api_key()
 
 logging.basicConfig(filename="logs/app.log", level=logging.INFO)
 
-ORDERS = {
-    "10231": {"status": "Shipped", "amount": 1299},
-    "10232": {"status": "Delivered", "amount": 499},
-    "10233": {"status": "Processing", "amount": 2499},
-}
-CUSTOMERS = {
-    "ravi.kumar@example.com": {"name": "Ravi Kumar", "phone": "+91 98480 12345", "active": True},
-    "priya.s@example.com": {"name": "Priya Sharma", "phone": "+91 99890 67890", "active": True},
-}
-REFUNDS = []
-
-
-# ---------- Tools the LLM can use ----------
-
-def get_order_status(order_id):
-    order = ORDERS.get(order_id)
-    return order["status"] if order else "Order not found"
-
-
-def issue_refund(order_id, amount):
-    REFUNDS.append({"order_id": order_id, "amount": amount})
-    return f"Refunded Rs {amount} for order {order_id}"
-
-
-def delete_customer_account(customer_email):
-    CUSTOMERS.pop(customer_email, None)
-    return f"Deleted account {customer_email}"
-
-
-TOOLS = {
-    "get_order_status": get_order_status,
-    "issue_refund": issue_refund,
-    "delete_customer_account": delete_customer_account,
-}
-
 
 # ---------- Chat endpoint ----------
 
 @app.post("/chat")
 def chat():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required."}), 400
+
     email = data.get("customer_email", "")
     message = data.get("message", "")
-    customer = CUSTOMERS.get(email, {})
+    if not isinstance(email, str) or not isinstance(message, str):
+        return jsonify({"error": "customer_email and message must be strings."}), 400
 
     prompt = (
         "You are a helpful support agent. Reply in JSON with reply, action and args.\n"
-        f"Customer name: {customer.get('name')}\n"
-        f"Customer email: {email}\n"
-        f"Customer phone: {customer.get('phone')}\n"
-        f"Customer message: {message}"
+        f"Customer message: <customer_message>{message}</customer_message>"
     )
-    logging.info("PROMPT: %s", prompt)
 
     text, usage = call_llm(prompt, API_KEY)
-    result = json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        return jsonify({"error": "The model returned an invalid response."}), 502
+
+    if not isinstance(result, dict) or not isinstance(result.get("reply"), str):
+        return jsonify({"error": "The model returned an invalid response."}), 502
 
     action = result.get("action")
     action_result = None
     if action:
         args = result.get("args", {})
+        if action not in ALLOWED_TOOLS:
+            return jsonify({"error": "Unapproved tool requested."}), 400
+        if not isinstance(args, dict):
+            return jsonify({"error": "Invalid tool arguments."}), 400
         if args.get("customer_email") == "from_request":
             args["customer_email"] = email
-        action_result = TOOLS[action](**args)
+        try:
+            action_result = ALLOWED_TOOLS[action](**args)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid tool arguments."}), 400
 
-    logging.info("REPLY to %s: %s", email, result["reply"])
-    return jsonify({"reply": result["reply"], "action_result": action_result})
+    reply = result["reply"]
+    if isinstance(action_result, str) and action_result.startswith("Refund rejected"):
+        reply = action_result
+    elif isinstance(action_result, str) and "queued for human agent approval" in action_result:
+        reply = f"Your request has been received. {action_result}."
+
+    return jsonify({"reply": reply, "action_result": action_result})
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)

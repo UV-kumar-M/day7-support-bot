@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 import tools
@@ -88,3 +90,24 @@ def test_excessive_and_repeated_refunds_blocked(client):
     assert "Refund rejected" in repeated_body["action_result"]
     assert repeated_body["reply"] == repeated_body["action_result"]
     assert "issued" not in repeated_body["reply"].lower()
+
+
+def test_telemetry_log_contains_no_customer_pii(client, caplog):
+    caplog.set_level(logging.INFO)
+    client.post(
+        "/chat",
+        json={
+            "customer_email": "ravi.kumar@example.com",
+            "message": "Where is my order 10231?",
+        },
+    )
+
+    telemetry = "\n".join(record.getMessage() for record in caplog.records)
+    assert "ravi.kumar@example.com" not in telemetry
+    assert "Where is my order 10231?" not in telemetry
+    assert "request_id=" in telemetry
+    assert 'model="approved-support-llm"' in telemetry
+    assert "latency_ms=" in telemetry
+    assert "input_tokens=" in telemetry
+    assert "output_tokens=" in telemetry
+    assert "cost_inr=" in telemetry

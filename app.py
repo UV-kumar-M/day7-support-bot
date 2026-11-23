@@ -5,6 +5,8 @@ and an action, and the app carries out the action.
 """
 import json
 import logging
+import time
+import uuid
 
 from flask import Flask, jsonify, request
 
@@ -23,6 +25,7 @@ logging.basicConfig(filename="logs/app.log", level=logging.INFO)
 
 @app.post("/chat")
 def chat():
+    request_id = uuid.uuid4().hex[:8]
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required."}), 400
@@ -37,7 +40,13 @@ def chat():
         f"Customer message: <customer_message>{message}</customer_message>"
     )
 
+    started_at = time.perf_counter()
     text, usage = call_llm(prompt, API_KEY)
+    latency_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    _log_ai_call(request_id, latency_ms, input_tokens, output_tokens)
+
     try:
         result = json.loads(text)
     except json.JSONDecodeError:
@@ -68,6 +77,19 @@ def chat():
         reply = f"Your request has been received. {action_result}."
 
     return jsonify({"reply": reply, "action_result": action_result})
+
+
+def _log_ai_call(request_id, latency_ms, input_tokens, output_tokens):
+    cost_inr = round((input_tokens + output_tokens) * 0.0005, 4)
+    logging.info(
+        'request_id=%s model="approved-support-llm" latency_ms=%s '
+        "input_tokens=%s output_tokens=%s cost_inr=%s",
+        request_id,
+        latency_ms,
+        input_tokens,
+        output_tokens,
+        cost_inr,
+    )
 
 
 if __name__ == "__main__":
